@@ -3,3 +3,12 @@
 .RData
 .Ruserdata
 .Renviron
+
+# Local editor and assistant settings
+.vscode/
+.claude/
+
+# Personal notes and drafts (not part of the project)
+presentation/QA_prep_*.md
+presentation/html_deck/
+linkedin_project/

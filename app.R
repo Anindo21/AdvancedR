@@ -25,7 +25,8 @@ DATA_DIR <- here::here("data")  # portable: resolves via the project root marker
 AVAILABLE_DATASETS <- c(
   "Wage Data (wage.csv)"                          = "wage.csv",
   "Titanic Survival Data (titanic.csv)"            = "titanic.csv",
-  "Stock Indices Time Series (stock_indices.csv)" = "stock_indices.csv"
+  "Stock Indices Time Series (stock_indices.csv)" = "stock_indices.csv",
+  "Student Rental Panel Data (srental.csv)"       = "srental.csv"
 )
 
 # Helper function to resolve dataset paths (checks local working dir first, then DATA_DIR)
@@ -538,7 +539,15 @@ server <- function(input, output, session) {
     } else if (identical(input$data_source, "available")) {
       tagList(
         selectInput("available_file", "Choose Available Dataset:", choices = AVAILABLE_DATASETS, selected = "wage.csv"),
-        uiOutput("available_file_status")
+        uiOutput("available_file_status"),
+        if (!is_logistic && !is_ts) {
+          selectInput(
+            "data_structure_available",
+            "Select Econometric Data Structure:",
+            choices = c("Cross Sectional Data" = "cs", "Time Series" = "ts", "Panel Data" = "panel"),
+            selected = "cs"
+          )
+        }
       )
     } else if (is_logistic) {
       tagList(
@@ -584,7 +593,8 @@ server <- function(input, output, session) {
   output$panel_index_selectors <- renderUI({
     is_upload_panel   <- identical(input$data_source, "upload") && identical(input$data_structure_upload, "panel")
     is_simulate_panel <- identical(input$data_source, "simulate") && identical(input$data_structure_sim, "panel")
-    req(is_upload_panel || is_simulate_panel)
+    is_available_panel <- identical(input$data_source, "available") && identical(input$data_structure_available, "panel")
+    req(is_upload_panel || is_simulate_panel || is_available_panel)
     df <- current_data()
     cols <- names(df)
     req(length(cols) > 0)
@@ -628,6 +638,15 @@ server <- function(input, output, session) {
     )
   })
   
+  # Pre-select a sensible structure when a built-in dataset is chosen
+  observeEvent(input$available_file, {
+    default_structure <- switch(input$available_file,
+                                "stock_indices.csv" = "ts",
+                                "srental.csv"       = "panel",
+                                "cs")
+    updateSelectInput(session, "data_structure_available", selected = default_structure)
+  })
+
   output$available_file_status <- renderUI({
     req(input$available_file)
     filepath <- get_dataset_path(input$available_file)
@@ -649,7 +668,9 @@ server <- function(input, output, session) {
       input$data_structure_sim
     } else if (identical(input$data_source, "available")) {
       req(input$available_file)
-      if (identical(input$available_file, "stock_indices.csv")) "ts" else "cs"
+      if (!is.null(input$data_structure_available)) {
+        input$data_structure_available
+      } else if (identical(input$available_file, "stock_indices.csv")) "ts" else "cs"
     } else {
       req(input$data_structure_upload)
       input$data_structure_upload
@@ -895,6 +916,8 @@ server <- function(input, output, session) {
           y_sel <- "survived"; x_sel <- intersect(c("pclass", "age", "sex", "fare"), all_cols)
         } else if (input$available_file == "stock_indices.csv" && length(all_cols) >= 2) {
           y_sel <- all_cols[2]; x_sel <- all_cols[c(3, 4, 5)] # SPX ~ DJI + NDX + RUT
+        } else if (input$available_file == "srental.csv" && "rent" %in% all_cols) {
+          y_sel <- "rent"; x_sel <- intersect(c("pop", "avginc", "pctstu"), all_cols)
         }
       }
       
@@ -1135,7 +1158,7 @@ server <- function(input, output, session) {
     # is_panel already computed above -- data_structure() hasn't changed.
     
     if (is_panel) {
-      validate(need(input$data_source %in% c("upload", "simulate"), "Panel Data requires simulated or uploaded data."))
+      validate(need(input$data_source %in% c("upload", "simulate", "available"), "Panel Data requires simulated, uploaded or available data."))
       req(input$p_idx_i, input$p_idx_t)
       validate(need(input$p_idx_i %in% names(df), paste0("Cross-Section Index '", input$p_idx_i, "' not found in the data.")))
       validate(need(input$p_idx_t %in% names(df), paste0("Time Index '", input$p_idx_t, "' not found in the data.")))

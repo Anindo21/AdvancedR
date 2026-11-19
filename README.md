@@ -1,218 +1,89 @@
-# Interactive Linear Model Diagnostics
+# diag_lm: Automated Regression Diagnostics with a Shiny Dashboard
 
-An R Shiny application for exploring two classical OLS assumption violations —
-**heteroskedasticity** and **multicollinearity** — on simulated data. The user
-generates a dataset (optionally with a violation built in), the app fits a
-linear model, runs the relevant diagnostic tests, and presents the results as a
-formatted table and a residual plot.
+`diag_lm` is an R framework and interactive Shiny app that fits a regression model, automatically runs the diagnostic tests that fit that kind of model, and returns clear **PASS / CHECK** verdicts with plots and advice on what to do next. An optional AI layer explains the results in plain language.
 
-The project is built around a small custom **S3 class** (`diag_lm`) that keeps
-the statistical logic separate from the user interface.
+It covers four kinds of models:
 
-## Project structure
+| Model family | Diagnostics |
+| --- | --- |
+| Linear regression (OLS) | Breusch-Pagan (heteroskedasticity), VIF (multicollinearity), Shapiro-Wilk and Jarque-Bera (normality), Durbin-Watson and Breusch-Godfrey (autocorrelation) |
+| Logistic regression | Hosmer-Lemeshow goodness of fit, AUC, confusion matrix, separation check |
+| Univariate time series | Augmented Dickey-Fuller (stationarity), Ljung-Box (residual autocorrelation) |
+| Panel data (`plm`) | Pipeline of LM test (pooled vs. panel) → F test → Hausman (fixed vs. random effects) → serial correlation → two-way effects |
+
+Group project for *Advanced R for Econometricians*, University of Duisburg-Essen (Summer Semester 2026), by **Rezaul Hoque**, **Sarah Al-Talal** and **Thi Hong Cam Nguyen**.
+
+![Diagnostics tab of the app](report/figures/app_diagnostics_top.png)
+
+## What it does
+
+- **One S3 abstraction for all model types.** `new_diag_lm()` takes a fitted model and returns a `diag_lm` object with `print()`, `summary()`, `plot()` and `remediation_advice()` methods. The statistical logic stays separate from the user interface.
+- **Data simulators with switchable assumption violations.** These generate OLS, logistic, time-series and panel data with a chosen problem built in (for example heteroskedasticity or multicollinearity), so you can check that each test catches exactly what it should.
+- **Privacy-aware AI interpretation (optional).** When you ask for it, only the computed statistics are sent to an LLM (Groq via the `ellmer` package), never the raw data. The model then explains what the diagnostics mean.
+- **Tested.** Checks for the class and the AI layer, plus Shiny integration tests (`shiny::testServer`) that exercise the full reactive pipeline from inputs to outputs.
+
+## Results from the validation study
+
+- **Simulation:** every test flagged exactly the violation it targets: Breusch-Pagan p < 0.0001 under heteroskedasticity, VIF 15.68 under multicollinearity, and a Hausman test (p = 0.0001) that correctly selected fixed effects over random effects.
+- **Case study:** on real wage data (N = 8,328), the app detected heteroskedasticity and a 14% gender wage gap.
+- **Quality assurance:** an audit fixed 8 defects, which are now guarded by 9 automated server tests.
+
+The full write-up is in [`report/Hoque_AlTalal_Nguyen_diag_lm_ProjectReport.pdf`](report/Hoque_AlTalal_Nguyen_diag_lm_ProjectReport.pdf).
+
+![AI interpretation of a diagnostic plot](report/figures/app_ai_interpretation.png)
+
+## Repository structure
 
 ```
 .
-├── app.R                     # Shiny app (UI + server)
+├── app.R                     # Shiny dashboard (UI + server)
 ├── R/
-│   ├── diag_lm_class.R       # diag_lm S3 class: constructor + print/summary/plot methods
-│   └── simulate_data.R       # simulate_ols_data(): generates data with optional violations
-├── data/
-│   └── sample_cars.csv       # example CSV for trying the upload feature
-└── tests/
-    └── test_diag_lm.R        # quick checks for the diag_lm class
+│   ├── diag_lm_class.R       # diag_lm S3 class: constructors, summary/plot methods, remediation advice
+│   ├── simulate_data.R       # simulate_ols_data(), simulate_logit_data(), simulate_ts_data(), simulate_panel_data()
+│   └── llm_interpret.R       # optional plain-language interpretation via Groq (ellmer)
+├── data/                     # example datasets (wage, titanic, stock indices, student rental panel, cars)
+├── tests/
+│   ├── test_diag_lm.R        # checks for the diag_lm class
+│   ├── test_llm_interpret.R  # checks for the AI layer (no network calls)
+│   └── test_app_server.R     # Shiny integration tests with shiny::testServer()
+├── report/                   # project report (R Markdown source and PDF)
+└── presentation/             # final presentation
 ```
 
-## How it works
+## How to run
 
-### 1. Simulating data (`R/simulate_data.R`)
+1. Install R (4.3 or newer) and the packages:
 
-`simulate_ols_data(n, heteroskedastic, multicollinear)` returns a data frame
-with one outcome `Y` and two predictors `X1`, `X2`, generated from a known model:
+   ```r
+   install.packages(c("shiny", "shinydashboard", "dplyr", "tibble", "ggplot2", "gt",
+                      "lmtest", "sandwich", "car", "plm", "tseries", "here",
+                      "htmltools", "commonmark", "ellmer"))
+   ```
 
-$$Y = 10 + 2.5 \cdot X_1 - 1.5 \cdot X_2 + \varepsilon$$
+2. Start the app from the project root:
 
-The two flags deliberately break an assumption so the diagnostics have something
-to detect:
+   ```r
+   shiny::runApp()
+   ```
 
-- `heteroskedastic = TRUE` — the error standard deviation grows with `X1`
-  (`sd = 1 + 1.5 * |X1|`), producing the fan-shaped residual pattern.
-- `multicollinear = TRUE` — `X2` is set to `X1` plus a small amount of noise,
-  so the two predictors carry almost the same information.
+3. **Optional, for the AI interpretation:** create a free API key at [console.groq.com](https://console.groq.com) and add it to a `.Renviron` file in the project root (this file is git-ignored):
 
-With both flags off the data satisfies the usual OLS assumptions.
+   ```
+   GROQ_API_KEY=your_key_here
+   ```
 
-### 2. The `diag_lm` class (`R/diag_lm_class.R`)
+   Everything else works without a key. Without one, the AI panel shows a short note on how to set it up.
 
-`new_diag_lm(model)` takes a fitted `lm` object and returns a `diag_lm` object.
-It:
+## Running the tests
 
-1. Validates the input with `inherits(model, "lm")` and stops early on a bad
-   argument.
-2. Stores the formula, coefficient table, residuals and fitted values.
-3. Runs the **Breusch–Pagan test** (`lmtest::bptest`) for heteroskedasticity.
-4. Computes **VIF** (`car::vif`) for multicollinearity. Because `car::vif()`
-   errors on a single-predictor model, this is wrapped in `tryCatch()` and falls
-   back to `NA`.
-
-Three S3 methods are provided:
-
-| Method | Returns | Purpose |
-| --- | --- | --- |
-| `print.diag_lm` | console text | quick overview when typing the object name |
-| `summary.diag_lm` | `gt` table | coefficient table with the BP p-value in the subtitle |
-| `plot.diag_lm` | `ggplot` object | diagnostic plot selected by `type` (see below) |
-
-`plot.diag_lm` supports four plot types via its `type` argument:
-
-| `type` | Plot | What to look for |
-| --- | --- | --- |
-| `"residuals"` | Residuals vs Fitted | a funnel shape suggests heteroskedasticity |
-| `"qq"` | Normal Q-Q | points off the diagonal suggest non-normal residuals |
-| `"scale_location"` | Scale-Location | a rising trend suggests non-constant variance |
-| `"histogram"` | Residual histogram | skew or heavy tails in the residual distribution |
-
-### 3. The Shiny app (`app.R`)
-
-The server keeps almost no statistics of its own — it maps the UI controls to
-`simulate_ols_data()` and `new_diag_lm()` and then calls `summary()` / `plot()`.
-
-The **Data Source** control lets the user choose between two inputs:
-
-- **Simulate data** — uses `simulate_ols_data()` with the sample size and the
-  two violation switches.
-- **Upload a CSV** — reads a file with `read.csv()`, then offers dropdowns to
-  pick the outcome and predictor columns (only numeric columns are listed).
-  The model formula is built on the fly from those choices. `read.csv()` is
-  wrapped in `tryCatch()`, and `validate()`/`need()` show friendly messages
-  (e.g. "select at least one predictor") instead of red errors.
-
-Reactivity details:
-
-- `eventReactive(input$sim_btn, ...)` regenerates the simulated data **only**
-  when the "Simulate & Fit Model" button is pressed, so dragging the
-  sample-size slider does not trigger a re-fit. `ignoreNULL = FALSE` makes it
-  also run once at startup so the app is never blank.
-- `req(...)` makes the model step wait until the data and column choices exist,
-  avoiding errors on the very first render.
-
-## Interpreting the output
-
-- **Breusch–Pagan p-value** (Summary tab subtitle): a small value (< 0.05)
-  indicates heteroskedasticity. With the heteroskedasticity box ticked it drops
-  close to zero.
-- **VIF** (in the `diag_lm` object / print method): values above 5 suggest
-  problematic multicollinearity. With the multicollinearity box ticked the VIFs
-  rise well above this threshold.
-- **Residuals vs Fitted plot** (Diagnostic Plots tab): a horizontal band of
-  points is healthy; a widening funnel indicates heteroskedasticity.
-
-## The diagnostics in more detail
-
-### Breusch–Pagan test (heteroskedasticity)
-
-The OLS model assumes the error term has constant variance,
-$\mathrm{Var}(\varepsilon_i) = \sigma^2$ for every observation. The
-Breusch–Pagan test checks this by regressing the squared residuals on the
-predictors and seeing whether they explain any of the variation. The test
-statistic is
-
-$$BP = n \cdot R^2_{\text{aux}},$$
-
-where $R^2_{\text{aux}}$ is the R-squared from the auxiliary regression of the
-squared residuals on the predictors, and $n$ is the sample size. Under the null
-hypothesis of constant variance (homoskedasticity), $BP$ follows a
-$\chi^2$ distribution with degrees of freedom equal to the number of
-predictors. A small p-value means we reject constant variance, i.e. there is
-evidence of heteroskedasticity. In the app this statistic comes from
-`lmtest::bptest()`.
-
-### Variance Inflation Factor (multicollinearity)
-
-Multicollinearity happens when predictors are strongly correlated with each
-other, which inflates the variance of the estimated coefficients and makes them
-unstable. For predictor $j$ the VIF is
-
-$$VIF_j = \frac{1}{1 - R_j^2},$$
-
-where $R_j^2$ is the R-squared from regressing predictor $j$ on all the other
-predictors. If $j$ is unrelated to the others, $R_j^2 \approx 0$ and
-$VIF_j \approx 1$; if it is almost a linear combination of them, $R_j^2$
-approaches 1 and the VIF explodes. A common rule of thumb flags
-$VIF > 5$ (sometimes 10) as problematic. VIF needs at least two predictors,
-which is why `new_diag_lm()` returns `NA` for a single-predictor model. In the
-app these values come from `car::vif()`.
-
-### Residual plots
-
-- **Residuals vs Fitted** — should look like a structureless horizontal band.
-  A funnel (spread growing with the fitted value) points to heteroskedasticity;
-  a curve points to a missing non-linear term.
-- **Normal Q-Q** — standardised residuals plotted against theoretical normal
-  quantiles. Points on the diagonal mean the residuals are roughly normal;
-  curving tails mean skew or heavy tails.
-- **Scale-Location** — $\sqrt{|\text{standardised residuals}|}$ against fitted
-  values. A flat trend supports constant variance; an upward slope is another
-  sign of heteroskedasticity.
-- **Residual histogram** — a quick visual check of the residual distribution
-  for skew or departures from normality.
-
-## Running the project
-
-The required packages are `shiny`, `lmtest`, `car`, `gt`, `ggplot2`, `dplyr` and
-`tibble`:
-
-```r
-install.packages(c("shiny", "lmtest", "car", "gt", "ggplot2", "dplyr", "tibble"))
-```
-
-Run the app from the project root:
-
-```r
-shiny::runApp(".")
-```
-
-Run the checks for the `diag_lm` class:
+From the project root:
 
 ```r
 source("tests/test_diag_lm.R")
+source("tests/test_llm_interpret.R")
+source("tests/test_app_server.R")
 ```
 
-## Data Sources
+## Tech stack
 
-- `data/sample_cars.csv` was created as a project demo file for testing the
-  CSV upload workflow.
-- `data/srental.csv`, `data/wage.csv`, and `data/titanic.csv` are course/local
-  datasets included in this repository for reproducible examples.
-- If your module requires formal dataset citations, replace this section with
-  the exact bibliographic source used in your class materials.
-
-## Method and Package References
-
-The statistical procedures and outputs in this app are implemented using:
-
-- `lmtest` (`bptest`, `dwtest`, `bgtest`)
-- `car` (`vif`)
-- `plm` (`plm`, `plmtest`, `phtest`, `pbgtest`)
-- `gt` (table formatting)
-- `ggplot2` (diagnostic visualisation)
-- `shiny` and `shinydashboard` (interactive interface)
-
-References should be cited according to your course style guide (for example,
-CRAN package citation output via `citation("packageName")`).
-
-## AI Assistance Disclosure
-
-This project was developed by the author with interactive coding assistance
-tools used for debugging, refactoring, and implementation support. Final model
-design choices, interpretation logic, and submission responsibility remain with
-the author.
-
-## Notes
-
-- Files placed in `R/` are automatically sourced by Shiny at startup, which is
-  why the test script lives in `tests/` rather than `R/` (otherwise it would run
-  every time the app launches).
-- Simulated results change on each run by default. Enter a value in the
-  "Random seed" box (or pass `seed = ` to `simulate_ols_data()`) to get a
-  reproducible dataset.
+R, Shiny and shinydashboard, S3 classes, lmtest, sandwich, car, plm, tseries, ggplot2, gt and ellmer (Groq API), with R Markdown and LaTeX for the report.
